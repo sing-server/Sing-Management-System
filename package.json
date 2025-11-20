@@ -1,24 +1,66 @@
 {
-  "name": "sing-综合管理系统",
-  "private": true,
-  "version": "0.0.0",
-  "type": "module",
+  "name": "sing-management-system",
+  "version": "1.0.0",
+  "description": "sing Comprehensive Management System",
+  "main": "public/electron.js",
+  "homepage": "./",
   "scripts": {
-    "dev": "vite",
-    "build": "vite build",
-    "preview": "vite preview"
+    "start": "react-scripts start",
+    "build": "react-scripts build",
+    "test": "react-scripts test",
+    "eject": "react-scripts eject",
+    "electron:dev": "concurrently \"cross-env BROWSER=none npm start\" \"wait-on http://localhost:3000 && electron .\"",
+    "electron:build": "npm run build && electron-builder",
+    "postinstall": "electron-builder install-app-deps"
+  },
+  "build": {
+    "appId": "com.sing.management",
+    "productName": "Sing综合管理系统",
+    "files": [
+      "build/**/*",
+      "public/electron.js"
+    ],
+    "directories": {
+      "buildResources": "assets"
+    },
+    "win": {
+      "target": [
+        {
+          "target": "nsis",
+          "arch": [
+            "x64"
+          ]
+        }
+      ]
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "createDesktopShortcut": true
+    }
   },
   "dependencies": {
-    "react-router-dom": "^7.9.6",
-    "react-dom": "^19.2.0",
-    "lucide-react": "^0.554.0",
-    "react": "^19.2.0",
-    "xlsx": "latest"
+    "@testing-library/jest-dom": "^5.17.0",
+    "@testing-library/react": "^13.4.0",
+    "@testing-library/user-event": "^13.5.0",
+    "@types/jest": "^27.5.2",
+    "@types/node": "^16.18.119",
+    "@types/react": "^18.2.48",
+    "@types/react-dom": "^18.2.18",
+    "lucide-react": "^0.316.0",
+    "react": "^18.2.0",
+    "react-dom": "^18.2.0",
+    "react-router-dom": "^6.21.3",
+    "react-scripts": "5.0.1",
+    "typescript": "^4.9.5",
+    "web-vitals": "^2.1.4",
+    "xlsx": "^0.18.5"
   },
   "devDependencies": {
-    "@types/node": "^22.14.0",
-    "@vitejs/plugin-react": "^5.0.0",
-    "typescript": "~5.8.2",
-    "vite": "^6.2.0"
+    "concurrently": "^8.2.2",
+    "cross-env": "^7.0.3",
+    "electron": "22.3.27",
+    "electron-builder": "^24.9.1",
+    "wait-on": "^7.2.0"
   }
 }
