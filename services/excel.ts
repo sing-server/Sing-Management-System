@@ -1,5 +1,5 @@
 import * as XLSX from 'xlsx';
-import { EXCEL_HEADERS, DOC_TYPES, StatutoryHoliday, Employee, AnnualLeaveYear } from '../types';
+import { EXCEL_HEADERS, DOC_TYPES, StatutoryHoliday, Employee, AnnualLeaveYear, AnnualLeaveSlot } from '../types';
 
 export const ExcelService = {
   // Generic Export
@@ -109,6 +109,77 @@ export const ExcelService = {
       const workbook = XLSX.utils.book_new();
       XLSX.utils.book_append_sheet(workbook, worksheet, 'HistoryStats');
       XLSX.writeFile(workbook, `年假历史统计_${annualData.year}.xlsx`);
+  },
+
+  // Specialized: Export Annual Pre-declaration Table
+  exportPredeclareTable: (
+    slots: AnnualLeaveSlot[], 
+    employees: Employee[], 
+    holidays: StatutoryHoliday[],
+    year: number
+  ) => {
+      const headers = ['法定节假关联', '归属月', '开始日期', '结束日期', '限额', '申报人员名单'];
+      
+      const data = slots.map(slot => {
+          const holidayName = holidays.find(h => h.id === slot.relatedHolidayId)?.name || '-';
+          const applicantNames = slot.applicants.map(id => employees.find(e => e.id === id)?.name || id).join(', ');
+
+          return {
+              '法定节假关联': holidayName,
+              '归属月': `${slot.dominantMonth}月`,
+              '开始日期': slot.startDate,
+              '结束日期': slot.endDate,
+              '限额': slot.limit === 0 ? '法定(停)' : slot.limit,
+              '申报人员名单': applicantNames
+          };
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(data, { header: headers });
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'Predeclare');
+      XLSX.writeFile(workbook, `年假预申报表_${year}.xlsx`);
+  },
+
+  // Specialized: Export Result Allocation Table with Remarks
+  exportResultAllocation: (
+    slots: AnnualLeaveSlot[], 
+    employees: Employee[], 
+    holidays: StatutoryHoliday[],
+    year: number
+  ) => {
+      // Flatten data: One row per person per slot, or summary?
+      // Requirement implies a list similar to view. 
+      // Let's export one row per Slot, with list of approved/eliminated + remarks in text format.
+      
+      const headers = ['法定节假关联', '归属月', '日期范围', '限额', '入选名单(含批注)', '淘汰名单(含批注)'];
+
+      const data = slots.map(slot => {
+          const holidayName = holidays.find(h => h.id === slot.relatedHolidayId)?.name || '-';
+          const approvedList = slot.approved;
+          const eliminatedList = slot.applicants.filter(id => !approvedList.includes(id));
+
+          const formatList = (ids: string[]) => {
+              return ids.map(id => {
+                  const name = employees.find(e => e.id === id)?.name || id;
+                  const remark = slot.remarks?.[id] ? ` [批注: ${slot.remarks[id]}]` : '';
+                  return `${name}${remark}`;
+              }).join('; ');
+          };
+
+          return {
+              '法定节假关联': holidayName,
+              '归属月': `${slot.dominantMonth}月`,
+              '日期范围': `${slot.startDate} ~ ${slot.endDate}`,
+              '限额': slot.limit,
+              '入选名单(含批注)': formatList(approvedList),
+              '淘汰名单(含批注)': formatList(eliminatedList)
+          };
+      });
+
+      const worksheet = XLSX.utils.json_to_sheet(data, { header: headers });
+      const workbook = XLSX.utils.book_new();
+      XLSX.utils.book_append_sheet(workbook, worksheet, 'ResultAllocation');
+      XLSX.writeFile(workbook, `年假分配结果_${year}.xlsx`);
   },
 
   // Download Template

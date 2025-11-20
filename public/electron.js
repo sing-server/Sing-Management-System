@@ -1,10 +1,9 @@
-const { app, BrowserWindow } = require('electron');
+const { app, BrowserWindow, Menu } = require('electron');
 const path = require('path');
+const isDev = require('electron-is-dev');
 
 function createWindow() {
-  // Check if we are in production (packaged) or development
-  const isDev = !app.isPackaged;
-
+  // Create the browser window.
   const win = new BrowserWindow({
     width: 1280,
     height: 800,
@@ -14,7 +13,8 @@ function createWindow() {
     webPreferences: {
       nodeIntegration: true,
       contextIsolation: false,
-      webSecurity: false
+      // Enable web security but allow local file access for production build
+      webSecurity: false 
     }
   });
 
@@ -25,14 +25,19 @@ function createWindow() {
       : `file://${path.join(__dirname, '../build/index.html')}`
   );
 
-  // Hide menu bar in production
-  if (!isDev) {
-    win.setMenuBarVisibility(false);
+  // Hide the default menu bar for a cleaner look (optional)
+  win.setMenuBarVisibility(false);
+
+  // Open DevTools in development mode
+  if (isDev) {
+    // win.webContents.openDevTools();
   }
 }
 
+// This method will be called when Electron has finished initialization
 app.whenReady().then(createWindow);
 
+// Quit when all windows are closed, except on macOS
 app.on('window-all-closed', () => {
   if (process.platform !== 'darwin') {
     app.quit();

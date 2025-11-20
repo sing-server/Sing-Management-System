@@ -1,4 +1,3 @@
-
 export enum UserRole {
   ADMIN = 'ADMIN',
   USER = 'USER'
@@ -90,6 +89,7 @@ export interface AnnualLeaveSlot {
   applicants: string[]; // Employee IDs who applied
   approved: string[]; // Employee IDs who won the slot
   customLimit?: boolean; // NEW: Tracks if the limit was manually set (overriding global)
+  remarks?: Record<string, string>; // NEW: Key=EmpID, Value=Remark text
 }
 
 export interface AnnualLeaveYear {

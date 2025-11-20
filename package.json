@@ -13,6 +13,7 @@
     "electron:build": "npm run build && electron-builder",
     "postinstall": "electron-builder install-app-deps"
   },
+  "author": "Your Name",
   "build": {
     "appId": "com.sing.management",
     "productName": "Sing综合管理系统",
@@ -28,7 +29,8 @@
         {
           "target": "nsis",
           "arch": [
-            "x64"
+            "x64",
+            "ia32"
           ]
         }
       ]
@@ -61,6 +63,19 @@
     "cross-env": "^7.0.3",
     "electron": "22.3.27",
     "electron-builder": "^24.9.1",
+    "electron-is-dev": "^2.0.0",
     "wait-on": "^7.2.0"
+  },
+  "browserslist": {
+    "production": [
+      ">0.2%",
+      "not dead",
+      "not op_mini all"
+    ],
+    "development": [
+      "last 1 chrome version",
+      "last 1 firefox version",
+      "last 1 safari version"
+    ]
   }
 }

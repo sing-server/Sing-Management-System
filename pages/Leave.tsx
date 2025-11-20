@@ -2,14 +2,20 @@ import React, { useState, useEffect, useRef } from 'react';
 import { StorageService } from '../services/storage';
 import { ExcelService } from '../services/excel';
 import { Employee, MonthlyLeave, AnnualLeaveYear, AnnualLeaveSlot, WEEK_DAYS, StatutoryHoliday } from '../types';
-import { Calendar, Save, Plus, Trash2, Trophy, Settings, RefreshCw, X, ArrowRight, ArrowLeft, Download, Upload, FileSpreadsheet, Lock, Unlock, Search, Clock, Briefcase, BarChart3, Filter, Printer, Coffee, ListRestart, Trash } from 'lucide-react';
+import { Calendar, Save, Plus, Trash2, Trophy, Settings, RefreshCw, X, ArrowRight, ArrowLeft, Download, Upload, FileSpreadsheet, Lock, Unlock, Briefcase, BarChart3, Filter, Printer, Coffee, ListRestart, Trash, MessageSquare } from 'lucide-react';
 import { PasswordModal, PrintModal } from '../components/Shared';
 
 type DayType = 'WORK' | 'WEEKEND' | 'STATUTORY' | 'NORMAL_HOLIDAY';
 
 const STATUTORY_NAMES = ['元旦节', '春节', '清明节', '劳动节', '端午节', '中秋节', '国庆节'];
-// Defined Major Holidays for exclusive statistical counting
 const MAJOR_HOLIDAYS = ['春节', '劳动节', '国庆节'];
+
+// NEW: Cache Interface for Performance Optimization
+interface StatsCache {
+    annual: number; // Annual leave used in OTHER months
+    pastRest: number; // Rest days in PAST months
+    holidays: Record<string, number>; // Holiday rest days in OTHER months (Holiday ID -> Count)
+}
 
 const Leave: React.FC = () => {
   const [activeTab, setActiveTab] = useState<'monthly' | 'annual'>('monthly');
@@ -29,6 +35,8 @@ const Leave: React.FC = () => {
   const [monthlyRecords, setMonthlyRecords] = useState<MonthlyLeave[]>([]);
   const [unlockedMonths, setUnlockedMonths] = useState<Set<string>>(new Set()); 
   const [manuallyLockedMonths, setManuallyLockedMonths] = useState<Set<string>>(new Set()); 
+  // NEW: Performance Cache State
+  const [statsCache, setStatsCache] = useState<Record<string, StatsCache>>({});
 
   // --- Annual State ---
   const [annualSubTab, setAnnualSubTab] = useState<'settings' | 'cumulative' | 'history' | 'predeclare' | 'result'>('predeclare');
@@ -39,6 +47,8 @@ const Leave: React.FC = () => {
   // --- Annual UI State ---
   const [predeclareMonthFilter, setPredeclareMonthFilter] = useState<string>('0'); 
   const [resultMonthFilter, setResultMonthFilter] = useState<string>('0');
+  const [editingRemark, setEditingRemark] = useState<{slotId: string, empId: string} | null>(null);
+  const [remarkText, setRemarkText] = useState('');
 
   // --- Settings Inputs ---
   // Default Name BLANK for Statutory
@@ -60,10 +70,6 @@ const Leave: React.FC = () => {
   // --- Input State for Predeclare ---
   const [candidateInputs, setCandidateInputs] = useState<Record<string, string>>({});
   const [foundCandidates, setFoundCandidates] = useState<Record<string, string>>({}); 
-
-  // --- Habit Settings State ---
-  const [isHabitModalOpen, setIsHabitModalOpen] = useState(false);
-  const [habitSearchId, setHabitSearchId] = useState('');
 
   const historyFileInputRef = useRef<HTMLInputElement>(null);
   const fmtZero = (val: any) => (val === 0 || val === '0' || val === '0.0' || val === 0.0) ? '' : val;
@@ -227,25 +233,51 @@ const Leave: React.FC = () => {
       return approvedDays;
   };
 
+  // OPTIMIZED: Load Data & Build Cache in one pass
   const loadMonthlyData = (currentEmps: Employee[], annData: AnnualLeaveYear) => {
     const allRecords = StorageService.getMonthlyLeave();
     const year = monthDate.getFullYear();
     const month = monthDate.getMonth() + 1;
     const daysInMonth = new Date(year, month, 0).getDate();
-    let hasChanges = false;
-    const recordsForView = [...allRecords];
     
-    const now = new Date();
-    const isStrictFuture = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth() + 1);
+    const recordsForView: MonthlyLeave[] = [];
+    // CACHE BUILDING: Pre-calculate stats for OTHER months in this year
+    const newCache: Record<string, StatsCache> = {};
+    const yearRecords = allRecords.filter(r => r.year === year);
 
     currentEmps.forEach(emp => {
+        // 1. Build Cache
+        const empRecords = yearRecords.filter(r => r.employeeId === emp.id);
+        const otherRecords = empRecords.filter(r => r.month !== month);
+        
+        let cachedAnnual = 0;
+        let cachedPastRest = 0;
+        const cachedHolidays: Record<string, number> = {};
+
+        otherRecords.forEach(r => {
+            cachedAnnual += (r.annualDays?.length || 0);
+            if (r.month < month) {
+                cachedPastRest += (r.restDays?.length || 0);
+            }
+            // Calculate holiday intersections for other months
+            annData.holidays.forEach(h => {
+                const count = calculateHolidayIntersection(r, h);
+                cachedHolidays[h.id] = (cachedHolidays[h.id] || 0) + count;
+            });
+        });
+        newCache[emp.id] = { annual: cachedAnnual, pastRest: cachedPastRest, holidays: cachedHolidays };
+
+        // 2. Prepare Current Month Record
         if (!shouldShowEmployee(emp, year, month)) return;
 
-        let rec = recordsForView.find(r => r.employeeId === emp.id && r.year === year && r.month === month);
+        let rec = empRecords.find(r => r.month === month);
         const autoQuota = calculateAnnualQuota(emp.joinDate);
+        const now = new Date();
+        const isStrictFuture = year > now.getFullYear() || (year === now.getFullYear() && month > now.getMonth() + 1);
+        let isNew = false;
 
         if (!rec) {
-            hasChanges = true;
+            isNew = true;
             const autoRestDays: number[] = [];
             if (isStrictFuture && emp.weeklyRestDays && emp.weeklyRestDays.length > 0) {
                 for (let d = 1; d <= daysInMonth; d++) {
@@ -272,14 +304,15 @@ const Leave: React.FC = () => {
                     annualLeaveQuota: autoQuota, annualLeaveUsed: 0, pastMonthRest: 0, avgMonthRest: '0'
                 }
             };
-            recordsForView.push(rec);
         } else {
-            if (rec.stats.annualLeaveQuota !== autoQuota) {
-                rec.stats.annualLeaveQuota = autoQuota;
-                hasChanges = true;
-            }
+             // Update quota if needed
+             if (rec.stats.annualLeaveQuota !== autoQuota) {
+                 rec.stats.annualLeaveQuota = autoQuota;
+                 isNew = true; // Mark for save
+             }
         }
-        
+
+        // Sync Annual Slots
         const approvedAnnualDays = getApprovedAnnualLeaveDays(emp.id, year, month);
         if (approvedAnnualDays.length > 0) {
             const currentAnnual = rec.annualDays || [];
@@ -288,40 +321,61 @@ const Leave: React.FC = () => {
             if (mergedAnnual.length !== currentAnnual.length) {
                 rec.annualDays = mergedAnnual;
                 rec.restDays = rec.restDays.filter(d => !mergedAnnual.includes(d));
-                hasChanges = true;
+                isNew = true;
             }
         }
-    });
-    
-    recordsForView.forEach(rec => {
-        if (rec.year === year && rec.month === month) {
-             rec.stats = calculateStats(rec, annData);
+
+        // Calculate Stats using Cache
+        rec.stats = calculateStats(rec, annData, newCache[emp.id]);
+        recordsForView.push(rec);
+        
+        if (isNew) {
+             // Auto generated
         }
     });
     
-    if (hasChanges) StorageService.saveMonthlyLeave(recordsForView);
+    setStatsCache(newCache);
+    
+    const otherRecords = allRecords.filter(r => !(r.year === year && r.month === month));
+    const finalRecords = [...otherRecords, ...recordsForView];
+    
+    StorageService.saveMonthlyLeave(finalRecords);
     setMonthlyRecords(recordsForView);
   };
 
-  const calculateStats = (record: MonthlyLeave, annData: AnnualLeaveYear) => {
+  const calculateHolidayIntersection = (record: MonthlyLeave, holiday: StatutoryHoliday): number => {
+      const s = new Date(holiday.startDate).setHours(0,0,0,0);
+      const e = new Date(holiday.endDate).setHours(0,0,0,0);
+      let count = 0;
+      record.restDays.forEach(d => {
+          const t = new Date(record.year, record.month - 1, d).getTime();
+          if (t >= s && t <= e) count++;
+      });
+      return count;
+  }
+
+  // OPTIMIZED: Uses Cache
+  const calculateStats = (record: MonthlyLeave, annData: AnnualLeaveYear, cacheVal: StatsCache) => {
       const annualUsed = (record.annualDays || []).length;
+      // Use Cache for total Annual Used
+      const totalAnnual = (cacheVal?.annual || 0) + annualUsed;
+      
       let statTotal = 0;
       annData.holidays.forEach(h => {
-          const s = new Date(h.startDate).setHours(0,0,0,0);
-          const e = new Date(h.endDate).setHours(0,0,0,0);
-          record.restDays.forEach(d => {
-              const t = new Date(record.year, record.month - 1, d).getTime();
-              if (t >= s && t <= e) statTotal++;
-          });
+          statTotal += calculateHolidayIntersection(record, h);
       });
-      const allRecs = StorageService.getMonthlyLeave();
-      const pastRecs = allRecs.filter(r => r.employeeId === record.employeeId && r.year === record.year && r.month < record.month);
-      const pastRestTotal = pastRecs.reduce((sum, r) => sum + (r.restDays?.length || 0), 0);
+      
+      const pastRestTotal = cacheVal?.pastRest || 0;
       const currentRest = record.restDays.length;
       const totalRestYTD = pastRestTotal + currentRest;
       const avgRest = (totalRestYTD / record.month).toFixed(1);
+
       return {
-          ...record.stats, annualLeaveUsed: annualUsed, statutoryHoliday: statTotal, pastMonthRest: pastRestTotal, avgMonthRest: avgRest
+          ...record.stats, 
+          annualLeaveUsed: totalAnnual, // Cumulative
+          statutoryHoliday: statTotal, 
+          pastMonthRest: pastRestTotal, 
+          avgMonthRest: avgRest
       };
   };
 
@@ -351,31 +405,11 @@ const Leave: React.FC = () => {
       }
   };
 
-  const getYearlyHolidayStats = (empId: string) => {
-      if (!annualData) return {};
-      const year = monthDate.getFullYear();
-      const allMonthly = StorageService.getMonthlyLeave().filter(r => r.year === year && r.employeeId === empId);
-      const breakdown: Record<string, number> = {};
-      annualData.holidays.forEach(h => {
-          let count = 0;
-          const hStart = new Date(h.startDate);
-          const hEnd = new Date(h.endDate);
-          const sTime = hStart.setHours(0,0,0,0);
-          const eTime = hEnd.setHours(0,0,0,0);
-          allMonthly.forEach(record => {
-              record.restDays.forEach(day => {
-                  const currentDate = new Date(record.year, record.month - 1, day);
-                  const cTime = currentDate.getTime();
-                  if (cTime >= sTime && cTime <= eTime) count++;
-              });
-          });
-          breakdown[h.id] = count;
-      });
-      return breakdown;
-  };
-
-  const calculateHolidayBreakdown = (empId: string) => {
-     return getYearlyHolidayStats(empId);
+  // Helper: Get Total Holiday Count for display (Cache + Current)
+  const getTotalHolidayCount = (empId: string, holiday: StatutoryHoliday, currentRecord?: MonthlyLeave) => {
+      const cached = statsCache[empId]?.holidays[holiday.id] || 0;
+      const current = currentRecord ? calculateHolidayIntersection(currentRecord, holiday) : 0;
+      return cached + current;
   };
 
   const getDaysInMonth = (d: Date) => new Date(d.getFullYear(), d.getMonth() + 1, 0).getDate();
@@ -415,7 +449,9 @@ const Leave: React.FC = () => {
             newAnnual = newAnnual.filter(d => d !== day); 
         }
         const updatedRec = { ...record, restDays: newRest, annualDays: newAnnual };
-        updatedRec.stats = calculateStats(updatedRec, annualData!);
+        // USE CACHE to Calculate Stats Instantly
+        updatedRec.stats = calculateStats(updatedRec, annualData!, statsCache[empId]);
+        
         const idx = newRecords.indexOf(record);
         newRecords[idx] = updatedRec;
         setMonthlyRecords(newRecords);
@@ -441,28 +477,6 @@ const Leave: React.FC = () => {
       const month = monthDate.getMonth() + 1;
       const extendedRecords = monthlyRecords.map(r => r);
       ExcelService.exportMonthlyTable(year, month, employees, extendedRecords, getDaysInMonth(monthDate), annualData.holidays);
-  };
-
-  const getCumulativeStats = (empId: string, currentYear: number) => {
-    const allRecs = StorageService.getMonthlyLeave();
-    const ytdRecs = allRecs.filter(r => r.employeeId === empId && r.year === currentYear && r.month <= monthDate.getMonth() + 1);
-    const used = ytdRecs.reduce((sum, r) => sum + (r.annualDays?.length || 0), 0);
-    return { used };
-  };
-
-  const handleSaveHabit = (empId: string, dayVal: number, checked: boolean) => {
-      if (dayVal !== 0 && dayVal !== 6) return;
-      const emp = employees.find(e => e.id === empId);
-      if (!emp) return;
-      let currentHabits = emp.weeklyRestDays || [];
-      if (checked) {
-          if (!currentHabits.includes(dayVal)) currentHabits.push(dayVal);
-      } else {
-          currentHabits = currentHabits.filter(d => d !== dayVal);
-      }
-      const updatedEmps = employees.map(e => e.id === empId ? { ...e, weeklyRestDays: currentHabits } : e);
-      setEmployees(updatedEmps);
-      StorageService.saveEmployees(updatedEmps);
   };
 
   const saveAnnual = (newData: AnnualLeaveYear) => {
@@ -824,8 +838,12 @@ const Leave: React.FC = () => {
       setFoundCandidates(prev => ({ ...prev, [slotId]: '' }));
   };
 
-  const runAutoAllocation = () => {
-    if (isPredeclareUnlocked) return window.alert("预申报未锁定，无法执行自动分配！");
+  const handleRunAllocationClick = () => {
+     if (isPredeclareUnlocked) return window.alert("预申报未锁定，无法执行自动分配！");
+     triggerUnlock(executeAutoAllocation);
+  };
+
+  const executeAutoAllocation = () => {
     if (!annualData) return;
     const newSlots = annualData.slots.map(slot => {
       if (slot.limit === 0) return slot;
@@ -842,6 +860,23 @@ const Leave: React.FC = () => {
     });
     saveAnnual({ ...annualData, slots: newSlots });
     window.alert('自动分配完成！');
+  };
+
+  const handleSaveRemark = () => {
+      if (!editingRemark || !annualData) return;
+      const { slotId, empId } = editingRemark;
+      const slot = annualData.slots.find(s => s.id === slotId);
+      if (!slot) return;
+
+      const newRemarks = { ...(slot.remarks || {}), [empId]: remarkText };
+      updateSlot(slotId, { remarks: newRemarks });
+      setEditingRemark(null);
+      setRemarkText('');
+  };
+
+  const openRemarkModal = (slotId: string, empId: string, currentRemark: string = '') => {
+      setEditingRemark({ slotId, empId });
+      setRemarkText(currentRemark);
   };
 
   // Filter Helper
@@ -884,9 +919,7 @@ const Leave: React.FC = () => {
                 </div>
                 <div className="flex items-center gap-3 text-sm">
                     <div className="h-6 w-px bg-slate-300 mx-2"></div>
-                    <button onClick={() => { setHabitSearchId(''); setIsHabitModalOpen(true); }} className="btn-secondary flex items-center gap-2 text-blue-600 border-blue-200">
-                        <Clock size={16}/> 休假偏好设置
-                    </button>
+                    {/* Removed Leave Preference Button here */}
                     <button onClick={handleMonthLockClick} className={`flex items-center gap-2 px-3 py-1.5 rounded text-white shadow-sm transition-colors text-xs ${locked ? 'bg-red-500 hover:bg-red-600' : 'bg-green-500 hover:bg-green-600'}`}>
                         {locked ? <><Lock size={14}/> 解锁本月</> : <><Lock size={14}/> 锁定本月</>}
                     </button>
@@ -946,8 +979,7 @@ const Leave: React.FC = () => {
                                     springFestival: 0, statutoryHoliday: 0, avgStatutory: '0',
                                     annualLeaveQuota: 5, annualLeaveUsed: 0, pastMonthRest: 0, avgMonthRest: '0'
                                 };
-                                const cumulative = getCumulativeStats(emp.id, year);
-                                const holidayBreakdown = calculateHolidayBreakdown(emp.id);
+                                const cumulative = stats.annualLeaveUsed; // Use pre-calculated stat
                                 const habitElements = (emp.weeklyRestDays || []).map(d => {
                                     const label = WEEK_DAYS.find(w=>w.val===d)?.label;
                                     const colorClass = (d === 6 || d === 0) ? 'text-green-600 font-bold' : '';
@@ -981,7 +1013,7 @@ const Leave: React.FC = () => {
                                         
                                         {holidays.map(h => (
                                             <td key={h.id} className="border p-1 text-center bg-orange-50/30 font-bold text-orange-700 text-base">
-                                                {fmtZero(holidayBreakdown[h.id])}
+                                                {fmtZero(getTotalHolidayCount(emp.id, h, record))}
                                             </td>
                                         ))}
 
@@ -989,7 +1021,7 @@ const Leave: React.FC = () => {
                                         <td className="border p-0 text-center bg-blue-50/30 relative">
                                              <div className="flex items-center justify-center h-full font-bold text-purple-700 text-base">
                                                  {fmtZero(stats.annualLeaveUsed)}
-                                                 <span className="absolute top-0 right-0 text-[10px] bg-purple-200 text-purple-800 px-1 py-0 rounded-bl" title="当年累计已休">{cumulative.used}</span>
+                                                 <span className="absolute top-0 right-0 text-[10px] bg-purple-200 text-purple-800 px-1 py-0 rounded-bl" title="当年累计已休">{cumulative}</span>
                                              </div>
                                         </td>
                                         <td className="border p-0 text-center text-slate-600 text-base font-medium">{fmtZero(stats.pastMonthRest)}</td>
@@ -1303,12 +1335,15 @@ const Leave: React.FC = () => {
 
                                 <td className="vims-table-cell border">
                                     <div className="flex flex-wrap gap-2 p-1 max-h-24 overflow-y-auto">
-                                        {slot.applicants.map(empId => (
+                                        {slot.applicants.map(empId => {
+                                            const pKey = slot.relatedHolidayId || `m_${slot.dominantMonth}`;
+                                            const count = getHistoryCount(empId, pKey);
+                                            return (
                                             <div key={empId} className="px-3 py-1.5 rounded-md text-base border flex items-center gap-2 bg-white border-slate-200 text-slate-700 shadow-sm">
-                                                <span className="font-medium">{employees.find(e => e.id === empId)?.name}</span>
+                                                <span className="font-medium">{employees.find(e => e.id === empId)?.name} <span className="text-slate-400 text-xs">({count})</span></span>
                                                 {isPredeclareUnlocked && <button onClick={() => updateSlot(slot.id, { applicants: slot.applicants.filter(id => id !== empId) })} className="text-slate-400 hover:text-red-500 ml-1 no-print"><X size={14}/></button>}
                                             </div>
-                                        ))}
+                                        )})}
                                         {slot.applicants.length === 0 && !isBlock && <span className="text-slate-300 text-sm italic p-1">暂无申报人员</span>}
                                     </div>
                                 </td>
@@ -1349,7 +1384,11 @@ const Leave: React.FC = () => {
                     <button onClick={() => openPrintPreview(renderResultTab(), '年假分配结果')} className="btn-secondary flex items-center gap-2">
                         <Printer size={16}/> 打印
                     </button>
-                    <button onClick={runAutoAllocation} disabled={isPredeclareUnlocked} className={`bg-green-600 text-white px-4 py-2 rounded shadow flex items-center gap-2 text-sm font-bold ${isPredeclareUnlocked ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'}`}>
+                    {/* Export Excel Button */}
+                    <button onClick={() => annualData && ExcelService.exportResultAllocation(filterSlots(annualData.slots, resultMonthFilter).filter(s=>s.limit>0), employees, annualData.holidays, annualData.year)} className="btn-secondary flex items-center gap-2">
+                        <Download size={16}/> 导出
+                    </button>
+                    <button onClick={handleRunAllocationClick} disabled={isPredeclareUnlocked} className={`bg-green-600 text-white px-4 py-2 rounded shadow flex items-center gap-2 text-sm font-bold ${isPredeclareUnlocked ? 'opacity-50 cursor-not-allowed' : 'hover:bg-green-700'}`}>
                         <Trophy size={18} /> 执行自动分配
                     </button>
             </div>
@@ -1379,10 +1418,17 @@ const Leave: React.FC = () => {
                                         {approvedList.map(id => {
                                             const pKey = slot.relatedHolidayId || `m_${slot.dominantMonth}`;
                                             const count = getHistoryCount(id, pKey);
+                                            const remark = slot.remarks?.[id];
                                             return (
-                                                <div key={id} className="flex justify-between items-center p-2 rounded text-sm border bg-white border-green-200 shadow-sm">
-                                                    <span className="truncate">{employees.find(e=>e.id===id)?.name} <span className="text-slate-400 text-xs">({count}次)</span></span>
-                                                    <button onClick={() => updateSlot(slot.id, { approved: slot.approved.filter(x=>x!==id) })} className="text-red-500 no-print ml-1 flex-shrink-0"><ArrowRight size={14}/></button>
+                                                <div key={id} className="flex flex-col justify-between p-2 rounded text-sm border bg-white border-green-200 shadow-sm relative group">
+                                                    <div className="flex justify-between items-center w-full">
+                                                        <span className="truncate font-medium">{employees.find(e=>e.id===id)?.name} <span className="text-slate-400 text-xs">({count})</span></span>
+                                                        <div className="flex gap-1 no-print">
+                                                            <button onClick={() => openRemarkModal(slot.id, id, remark)} className="text-slate-400 hover:text-blue-500"><MessageSquare size={14}/></button>
+                                                            <button onClick={() => updateSlot(slot.id, { approved: slot.approved.filter(x=>x!==id) })} className="text-red-500"><ArrowRight size={14}/></button>
+                                                        </div>
+                                                    </div>
+                                                    {remark && <div className="text-xs text-slate-500 mt-1 truncate border-t pt-1">{remark}</div>}
                                                 </div>
                                             );
                                         })}
@@ -1395,12 +1441,19 @@ const Leave: React.FC = () => {
                                         {eliminatedList.map(id => {
                                             const pKey = slot.relatedHolidayId || `m_${slot.dominantMonth}`;
                                             const hist = getHistoryCount(id, pKey);
+                                            const remark = slot.remarks?.[id];
                                             return (
-                                                <div key={id} className="flex justify-between items-center p-2 rounded text-sm border bg-white border-red-100 shadow-sm">
-                                                    <div className="flex gap-1 items-center truncate">
-                                                        <span className="truncate">{employees.find(e=>e.id===id)?.name} <span className="text-slate-400 text-xs">({hist}次)</span></span>
+                                                <div key={id} className="flex flex-col justify-between p-2 rounded text-sm border bg-white border-red-100 shadow-sm relative group">
+                                                    <div className="flex justify-between items-center w-full">
+                                                        <div className="flex gap-1 items-center truncate">
+                                                            <span className="truncate font-medium">{employees.find(e=>e.id===id)?.name} <span className="text-slate-400 text-xs">({hist})</span></span>
+                                                        </div>
+                                                        <div className="flex gap-1 no-print">
+                                                             <button onClick={() => openRemarkModal(slot.id, id, remark)} className="text-slate-400 hover:text-blue-500"><MessageSquare size={14}/></button>
+                                                             <button onClick={() => updateSlot(slot.id, { approved: [...slot.approved, id] })} className="text-green-500 ml-1 flex-shrink-0"><ArrowLeft size={14}/></button>
+                                                        </div>
                                                     </div>
-                                                    <button onClick={() => updateSlot(slot.id, { approved: [...slot.approved, id] })} className="text-green-500 no-print ml-1 flex-shrink-0"><ArrowLeft size={14}/></button>
+                                                    {remark && <div className="text-xs text-slate-500 mt-1 truncate border-t pt-1">{remark}</div>}
                                                 </div>
                                             );
                                         })}
@@ -1412,6 +1465,25 @@ const Leave: React.FC = () => {
                 })}
             </div>
         </div>
+
+        {/* Remark Modal */}
+        {editingRemark && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[150] no-print">
+                <div className="bg-white p-6 rounded-lg shadow-xl w-96">
+                    <h3 className="font-bold mb-4">添加/编辑批注</h3>
+                    <textarea 
+                        className="w-full border p-2 rounded h-24 mb-4" 
+                        placeholder="输入批注内容..."
+                        value={remarkText}
+                        onChange={e => setRemarkText(e.target.value)}
+                    ></textarea>
+                    <div className="flex justify-end gap-2">
+                        <button onClick={() => setEditingRemark(null)} className="px-4 py-2 border rounded">取消</button>
+                        <button onClick={handleSaveRemark} className="px-4 py-2 bg-blue-600 text-white rounded">保存</button>
+                    </div>
+                </div>
+            </div>
+        )}
     </div>
   );
 
