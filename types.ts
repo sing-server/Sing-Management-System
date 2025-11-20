@@ -88,8 +88,8 @@ export interface AnnualLeaveSlot {
   limit: number;
   applicants: string[]; // Employee IDs who applied
   approved: string[]; // Employee IDs who won the slot
-  customLimit?: boolean; // NEW: Tracks if the limit was manually set (overriding global)
-  remarks?: Record<string, string>; // NEW: Key=EmpID, Value=Remark text
+  customLimit?: boolean; // Tracks if the limit was manually set (overriding global)
+  remarks?: Record<string, string>; // Key=EmpID, Value=Remark text. Added for result allocation annotations.
 }
 
 export interface AnnualLeaveYear {
