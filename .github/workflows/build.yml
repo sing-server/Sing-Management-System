@@ -1,0 +1,75 @@
+name: Build Electron App
+
+on:
+  push:
+    branches: [ main, master ]
+  pull_request:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+
+      - name: Fix Project Structure (Auto-Move Files)
+        shell: pwsh
+        run: |
+          Write-Host "Starting automatic file reorganization..."
+          
+          # 1. Ensure directories exist
+          if (!(Test-Path "src")) { New-Item -ItemType Directory -Path "src" -Force }
+          if (!(Test-Path "public")) { New-Item -ItemType Directory -Path "public" -Force }
+
+          # 2. Move Source Files -> src/
+          $srcFiles = @("index.tsx", "App.tsx", "types.ts")
+          foreach ($file in $srcFiles) {
+            if (Test-Path $file) { 
+              Write-Host "Moving $file to src/"
+              Move-Item -Path $file -Destination "src/" -Force 
+            }
+          }
+          
+          $srcFolders = @("components", "pages", "services")
+          foreach ($folder in $srcFolders) {
+            if (Test-Path $folder) { 
+              Write-Host "Moving $folder to src/"
+              Move-Item -Path $folder -Destination "src/" -Force 
+            }
+          }
+
+          # 3. Move HTML -> public/
+          if (Test-Path "index.html") { 
+            Write-Host "Moving index.html to public/"
+            Move-Item -Path "index.html" -Destination "public/" -Force 
+          }
+          
+          Write-Host "File structure fixed."
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: 16
+
+      - name: Install Dependencies
+        run: npm install
+
+      - name: Build React App & Electron Exe
+        run: npm run electron:build
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload Artifact (Installer)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sing-Management-System-Installer
+          path: dist/*.exe
+
+      - name: Upload Artifact (Unpacked)
+        uses: actions/upload-artifact@v4
+        with:
+          name: Sing-Management-System-Unpacked
+          path: dist/win-unpacked/
